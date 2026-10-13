@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "lib": [
+      "es2023"
+    ],
+    "types": [
+      "@cloudflare/workers-types",
+      "@cloudflare/vitest-pool-workers/types"
+    ],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "@earendil-works/pi-coding-agent": [
+        "./src/pi-coding-agent-shim.ts"
+      ]
+    }
+  },
+  "include": [
+    "src",
+    "extensions",
+    "test"
+  ]
+}

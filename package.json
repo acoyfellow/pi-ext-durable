@@ -1,0 +1,24 @@
+{
+  "name": "pi-ext-durable",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "postinstall": "node scripts/fetch-extension.mjs",
+    "dev": "wrangler dev",
+    "check": "tsc --noEmit && vitest run",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.2.0",
+    "@earendil-works/pi-ai": "1.2.0",
+    "@earendil-works/pi-durable": "1.2.0",
+    "agents": "0.28.1"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "latest",
+    "@cloudflare/workers-types": "latest",
+    "typescript": "^5.9.0",
+    "vitest": "latest",
+    "wrangler": "4.150.0"
+  }
+}
