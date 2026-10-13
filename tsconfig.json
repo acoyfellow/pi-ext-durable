@@ -24,5 +24,8 @@
     "src",
     "extensions",
     "test"
+  ],
+  "exclude": [
+    "machine"
   ]
 }

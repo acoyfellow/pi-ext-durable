@@ -49,3 +49,7 @@ Not covered yet:
 ## Versions
 
 pi-durable, pi-ai and chord 1.2.0, agents 0.28.1, wrangler 4.150.0. In 1.2.0, a pi-durable tool result uses `output`, not `content`.
+
+## machine/
+
+`machine/` is a second, tiny pi extension. Its `machine_report` tool uses Node (`child_process`, `os`), so it only works on a real machine. coil loads it into a thread computer with the source `https://github.com/acoyfellow/pi-ext-durable#main:machine`.
