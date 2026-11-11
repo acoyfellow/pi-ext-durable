@@ -8,9 +8,21 @@ import { openDurableObjectSqliteStorage } from '@earendil-works/pi-durable/stora
 import { Agent, getAgentByName } from 'agents';
 import type { Connection, WSMessage } from 'agents';
 import hello from '../extensions/hello';
+import demo from '../demo/extension';
 import { loadPiExtension } from './bridge';
+import { MODEL_ID, workersAiBindingProvider } from './model';
+import { PAGE } from './page';
 
-type Env = { readonly PI_AGENT: DurableObjectNamespace<PiAgent> };
+type Env = {
+  readonly PI_AGENT: DurableObjectNamespace<PiAgent>;
+  readonly AI: Ai;
+  readonly DEMO_MODEL?: string;
+};
+
+const MAX_INPUTS_PER_SESSION = 40;
+const MAX_INPUT_CHARS = 2000;
+const INSTRUCTIONS =
+  'You are pi, a coding agent running inside a Cloudflare Durable Object at the edge. Use your tools when they help: where_am_i, clock, fetch_page. Be concise and concrete.';
 
 export type Proof = {
   readonly loadedTools: readonly string[];
@@ -50,11 +62,12 @@ export class PiAgent extends Agent<Env> {
   private async openSession(): Promise<Session> {
     if (this.session) return this.session;
 
-    const loaded = await loadPiExtension('hello', hello);
-    const faux = scriptedModel();
+    const scripted = this.env.DEMO_MODEL === 'scripted';
+    const loaded = await loadPiExtension(scripted ? 'hello' : 'demo', scripted ? hello : demo);
     const models = createModels();
+    const provider = scripted ? scriptedModel().provider : workersAiBindingProvider(this.env.AI);
 
-    models.setProvider(faux.provider);
+    models.setProvider(provider);
 
     const registry = createRegistry();
 
@@ -66,7 +79,9 @@ export class PiAgent extends Agent<Env> {
       BACKGROUND_CONTEXT,
     );
     const conversation = await harness.root(BACKGROUND_CONTEXT, {
-      agent: { model: { provider: faux.provider.id, modelId: 'scripted' } },
+      agent: scripted
+        ? { model: { provider: provider.id, modelId: 'scripted' } }
+        : { model: { provider: provider.id, modelId: MODEL_ID }, instructions: INSTRUCTIONS },
     });
 
     harness.resume();
@@ -105,8 +120,17 @@ export class PiAgent extends Agent<Env> {
     const data = JSON.parse(message as string) as { type?: string; content?: string };
 
     if (data.type === 'input') {
+      const content = (data.content ?? '').slice(0, MAX_INPUT_CHARS);
+      const used = (this.ctx.storage.kv.get<number>('inputs') ?? 0) + 1;
+
+      if (used > MAX_INPUTS_PER_SESSION) {
+        connection.send(JSON.stringify({ type: 'limit', message: `This demo session is capped at ${MAX_INPUTS_PER_SESSION} prompts. Start a new session.` }));
+        return;
+      }
+
+      this.ctx.storage.kv.put('inputs', used);
       const { conversation, context } = await this.openSession();
-      const submission = await conversation.submit({ type: 'input', content: data.content ?? '' }, context);
+      const submission = await conversation.submit({ type: 'input', content }, context);
       await submission.wait(context);
       const state = this.sockets.get(connection);
       if (state) await this.replay(connection, state);
@@ -121,7 +145,8 @@ export class PiAgent extends Agent<Env> {
   }
 
   async prove(prompt: string): Promise<Proof> {
-    const loaded = await loadPiExtension('hello', hello);
+    const scripted = this.env.DEMO_MODEL === 'scripted';
+    const loaded = await loadPiExtension(scripted ? 'hello' : 'demo', scripted ? hello : demo);
     const { conversation, harness, context } = await this.openSession();
 
     const submission = await conversation.submit({ type: 'input', content: prompt }, context);
@@ -156,15 +181,19 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
+    if (url.pathname === '/') return new Response(PAGE, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+
     if (url.pathname === '/turn' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
       const agent = await getAgentByName(env.PI_AGENT, url.searchParams.get('name') ?? crypto.randomUUID());
       return agent.fetch(request);
     }
 
-    if (url.pathname !== '/prove') return new Response('GET /prove?name=<id> or WS /turn?name=<id>', { status: 404 });
+    if (url.pathname !== '/prove') return new Response('GET / (demo), GET /prove?name=<id>, or WS /turn?name=<id>', { status: 404 });
 
     const agent = await getAgentByName(env.PI_AGENT, url.searchParams.get('name') ?? crypto.randomUUID());
 
-    return Response.json(await agent.prove('Greet me with your hello tool.'));
+    return Response.json(
+      await agent.prove(env.DEMO_MODEL === 'scripted' ? 'Greet me with your hello tool.' : 'Where are you running? Use where_am_i, then answer in one sentence.'),
+    );
   },
 };

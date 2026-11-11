@@ -10,6 +10,10 @@ npm run check    # typecheck + tests in workerd
 npm run dev      # then: curl 'localhost:8787/prove?name=demo'
 ```
 
+## Live demo
+
+https://pi-ext-durable.customer0.dev runs the turn protocol with a real model: DeepSeek V4.1 Flash on Workers AI, through the `AI` binding. The tools come from `demo/extension.ts`: `where_am_i`, `clock` and `fetch_page`. Each session allows 40 prompts. Tests set `DEMO_MODEL=scripted` and use the faux model instead.
+
 ## Turn protocol
 
 `WS /turn?name=<id>` is the client protocol. The Durable Object owns the durable session, so the connection is replaceable: drop it, reconnect, and the server replays from your last cursor.

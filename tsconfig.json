@@ -23,6 +23,7 @@
   "include": [
     "src",
     "extensions",
+    "demo",
     "test"
   ],
   "exclude": [
