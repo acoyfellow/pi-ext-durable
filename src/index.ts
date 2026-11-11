@@ -1,9 +1,12 @@
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
+import type { Context } from '@earendil-works/chord';
 import { createModels } from '@earendil-works/pi-ai/models';
 import { fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from '@earendil-works/pi-ai/providers/faux';
-import { createRegistry, Harness } from '@earendil-works/pi-durable';
+import { createRegistry, Harness, watchEvents } from '@earendil-works/pi-durable';
+import type { AgentEvent, Conversation, Cursor } from '@earendil-works/pi-durable';
 import { openDurableObjectSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/cloudflare';
 import { Agent, getAgentByName } from 'agents';
+import type { Connection, WSMessage } from 'agents';
 import hello from '../extensions/hello';
 import { loadPiExtension } from './bridge';
 
@@ -16,6 +19,13 @@ export type Proof = {
   readonly answer: string;
   readonly entries: number;
 };
+
+interface Session {
+  readonly harness: Harness;
+  readonly conversation: Conversation;
+  readonly context: Context;
+  readonly stream: { stop(): Promise<unknown> };
+}
 
 const scriptedModel = () => {
   const faux = fauxProvider({ models: [{ id: 'scripted' }] });
@@ -34,7 +44,12 @@ const scriptedModel = () => {
 };
 
 export class PiAgent extends Agent<Env> {
-  async prove(prompt: string): Promise<Proof> {
+  private session: Session | undefined;
+  private readonly sockets = new Map<Connection, { cursor: Cursor | undefined }>();
+
+  private async openSession(): Promise<Session> {
+    if (this.session) return this.session;
+
     const loaded = await loadPiExtension('hello', hello);
     const faux = scriptedModel();
     const models = createModels();
@@ -56,12 +71,65 @@ export class PiAgent extends Agent<Env> {
 
     harness.resume();
 
-    const submission = await conversation.submit({ type: 'input', content: prompt }, BACKGROUND_CONTEXT);
+    const stream = await watchEvents(harness, conversation.id, BACKGROUND_CONTEXT);
+    stream.start(async (events: readonly AgentEvent[]) => {
+      if (events.length === 0) return;
 
-    await submission.wait(BACKGROUND_CONTEXT);
-    await conversation.waitForIdle(BACKGROUND_CONTEXT);
+      for (const [connection, state] of this.sockets) {
+        if (connection.readyState !== 1) continue;
 
-    const page = await conversation.entries({}, 100, undefined, BACKGROUND_CONTEXT);
+        connection.send(JSON.stringify({ type: 'agent', events, cursor: state.cursor ?? null }));
+      }
+    });
+
+    this.session = { harness, conversation, context: BACKGROUND_CONTEXT, stream };
+    return this.session;
+  }
+
+  private async replay(connection: Connection, state: { cursor: Cursor | undefined }): Promise<void> {
+    const { conversation, context } = await this.openSession();
+
+    const page = await conversation.entries({}, 100, state.cursor, context);
+
+    connection.send(JSON.stringify({ type: 'history', entries: page.items, cursor: page.next ?? null }));
+    state.cursor = page.next ?? state.cursor;
+  }
+
+  async onConnect(connection: Connection): Promise<void> {
+    const state: { cursor: Cursor | undefined } = { cursor: undefined };
+    this.sockets.set(connection, state);
+    await this.replay(connection, state);
+  }
+
+  async onMessage(connection: Connection, message: WSMessage): Promise<void> {
+    const data = JSON.parse(message as string) as { type?: string; content?: string };
+
+    if (data.type === 'input') {
+      const { conversation, context } = await this.openSession();
+      const submission = await conversation.submit({ type: 'input', content: data.content ?? '' }, context);
+      await submission.wait(context);
+      const state = this.sockets.get(connection);
+      if (state) await this.replay(connection, state);
+    } else if (data.type === 'abort') {
+      const { conversation, context } = await this.openSession();
+      await conversation.abort(context, {});
+    }
+  }
+
+  async onClose(connection: Connection): Promise<void> {
+    this.sockets.delete(connection);
+  }
+
+  async prove(prompt: string): Promise<Proof> {
+    const loaded = await loadPiExtension('hello', hello);
+    const { conversation, harness, context } = await this.openSession();
+
+    const submission = await conversation.submit({ type: 'input', content: prompt }, context);
+
+    await submission.wait(context);
+    await conversation.waitForIdle(context);
+
+    const page = await conversation.entries({}, 100, undefined, context);
     const messages = page.items.flatMap((entry) => entry.model ?? []);
     const textOf = (role: string) =>
       messages
@@ -72,7 +140,7 @@ export class PiAgent extends Agent<Env> {
         .flatMap((block) => (block.type === 'text' && block.text !== undefined ? [block.text] : []))
         .join('\n');
 
-    await harness.close(BACKGROUND_CONTEXT);
+    await harness.close(context);
 
     return {
       loadedTools: loaded.tools,
@@ -88,7 +156,12 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname !== '/prove') return new Response('GET /prove?name=<id>', { status: 404 });
+    if (url.pathname === '/turn' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
+      const agent = await getAgentByName(env.PI_AGENT, url.searchParams.get('name') ?? crypto.randomUUID());
+      return agent.fetch(request);
+    }
+
+    if (url.pathname !== '/prove') return new Response('GET /prove?name=<id> or WS /turn?name=<id>', { status: 404 });
 
     const agent = await getAgentByName(env.PI_AGENT, url.searchParams.get('name') ?? crypto.randomUUID());
 

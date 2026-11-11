@@ -6,9 +6,18 @@ A normal pi extension running inside a Cloudflare Durable Object, on pi-durable 
 
 ```sh
 npm install
-npm run check    # typecheck + one test in workerd
+npm run check    # typecheck + tests in workerd
 npm run dev      # then: curl 'localhost:8787/prove?name=demo'
 ```
+
+## Turn protocol
+
+`WS /turn?name=<id>` is the client protocol. The Durable Object owns the durable session, so the connection is replaceable: drop it, reconnect, and the server replays from your last cursor.
+
+- Client sends `{ "type": "input", "content": "..." }` to submit a prompt, or `{ "type": "abort" }` to stop the turn.
+- Server opens with `{ "type": "history", "entries", "cursor" }`: everything since the last cursor (the full log on a fresh connect).
+- Then `{ "type": "agent", "events", "cursor" }` for each live batch from pi-durable's `watchEvents`, which carries token deltas, tool call and result events, and run boundaries. `cursor` is only for tracking position, so a reconnect can resume.
+
 
 ```json
 {
